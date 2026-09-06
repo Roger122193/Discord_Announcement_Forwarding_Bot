@@ -2,4 +2,5 @@
 keys.env
 *.log
 __pycache__/
+.venv/
 listener_state.json
