@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import random
+import re
 import discord
 from dotenv import load_dotenv
 import os
@@ -27,6 +28,8 @@ monitored_groups = {}
 forwarding_targets = {}
 last_message_ids = {}  # 紀錄各頻道最新處理過的訊息 ID，避免重複發送
 STATE_FILE = "listener_state.json"
+POLL_MIN_SECONDS = 60
+POLL_MAX_SECONDS = 110
 
 
 def configure_console_encoding():
@@ -51,12 +54,11 @@ class DiscordBotApiClient:
     response = await self.request("GET", "/users/@me")
     return response.get("username", response.get("id", "未知 Bot"))
 
-  async def send_message(self, channel_id, content):
-    await self.request(
-        "POST",
-        f"/channels/{channel_id}/messages",
-        {"content": content},
-    )
+  async def send_message(self, channel_id, content, embeds=None):
+    payload = {"content": content}
+    if embeds:
+      payload["embeds"] = embeds
+    await self.request("POST", f"/channels/{channel_id}/messages", payload)
 
   async def request(self, method, path, payload=None):
     if not self.token:
@@ -262,6 +264,8 @@ class InteractivePollingSelfBot(discord.Client):
       "display_name",
       getattr(message.author, "name", str(message.author)),
     )
+    content = await self.replace_role_mentions(message.guild, content)
+    embeds = await self.serialize_embeds(message)
     message_time = message.created_at.astimezone().strftime(
       "%Y-%m-%d %H:%M:%S"
     )
@@ -276,7 +280,9 @@ class InteractivePollingSelfBot(discord.Client):
     try:
       for start in range(0, len(forwarded_content), 2000):
         await self.forward_bot.send_message(
-            target_id, forwarded_content[start:start + 2000]
+            target_id,
+            forwarded_content[start:start + 2000],
+            embeds=embeds if start == 0 else None,
         )
       print(f"[轉發] 已送出至頻道 {target_id}")
     except BotApiError as error:
@@ -286,6 +292,101 @@ class InteractivePollingSelfBot(discord.Client):
         print(f"[X] 找不到轉發目的頻道 {target_id}，或 Bot 尚未加入該伺服器。")
       else:
         print(f"[X] 轉發訊息失敗（頻道 {target_id}）：{error}")
+
+  async def replace_role_mentions(self, guild, content):
+    role_mentions = re.findall(r"<@&(\d+)>", content)
+    if not role_mentions or not guild:
+      return content
+
+    roles_by_id = {
+        role.id: role.name for role in getattr(guild, "roles", [])
+    }
+    missing_role_ids = [
+        int(role_id) for role_id in role_mentions
+        if int(role_id) not in roles_by_id
+    ]
+    if missing_role_ids and hasattr(guild, "fetch_roles"):
+      try:
+        fetched_roles = await guild.fetch_roles()
+        roles_by_id.update({role.id: role.name for role in fetched_roles})
+      except Exception:
+        pass
+
+    def replace_match(match):
+      role_id = int(match.group(1))
+      role_name = roles_by_id.get(role_id)
+      return f"@{role_name}" if role_name else f"@未知身份組 ({role_id})"
+
+    return re.sub(r"<@&(\d+)>", replace_match, content)
+
+  async def serialize_embeds(self, message):
+    serialized = []
+    for source_embed in getattr(message, "embeds", []):
+      if hasattr(source_embed, "to_dict"):
+        source_data = source_embed.to_dict()
+      else:
+        source_data = dict(source_embed)
+
+      embed = {}
+      for key in ("title", "description", "url", "timestamp", "color"):
+        if source_data.get(key) is not None:
+          embed[key] = source_data[key]
+
+      for key in ("title", "description"):
+        if key in embed:
+          embed[key] = await self.replace_role_mentions(
+              message.guild, embed[key]
+          )
+
+      for key in ("footer", "image", "thumbnail", "author"):
+        value = source_data.get(key)
+        if not isinstance(value, dict):
+          continue
+        allowed_keys = {
+            "footer": ("text", "icon_url"),
+            "image": ("url",),
+            "thumbnail": ("url",),
+            "author": ("name", "url", "icon_url"),
+        }[key]
+        cleaned_value = {
+            nested_key: value[nested_key]
+            for nested_key in allowed_keys
+            if value.get(nested_key)
+        }
+        if cleaned_value:
+          if key == "footer" and "text" in cleaned_value:
+            cleaned_value["text"] = await self.replace_role_mentions(
+                message.guild, cleaned_value["text"]
+            )
+          if key == "author" and "name" in cleaned_value:
+            cleaned_value["name"] = await self.replace_role_mentions(
+                message.guild, cleaned_value["name"]
+            )
+          embed[key] = cleaned_value
+
+      fields = source_data.get("fields")
+      if isinstance(fields, list):
+        embed["fields"] = []
+        for field in fields:
+          if not isinstance(field, dict) or not field.get("name") or not field.get("value"):
+            continue
+          embed["fields"].append({
+              "name": await self.replace_role_mentions(
+                  message.guild, field["name"]
+              ),
+              "value": await self.replace_role_mentions(
+                  message.guild, field["value"]
+              ),
+              **({"inline": field["inline"]} if field.get("inline") is not None else {}),
+          })
+        if not embed["fields"]:
+          embed.pop("fields")
+
+      if embed:
+        serialized.append(embed)
+      if len(serialized) == 10:
+        break
+    return serialized
 
   async def configure_menu(self):
     loop = asyncio.get_event_loop()
@@ -579,7 +680,9 @@ class InteractivePollingSelfBot(discord.Client):
           print(f"[X] 讀取頻道 #{channel.name} 歷史紀錄失敗: {e}")
 
       # 基準 60 秒，加上 0～50 秒的隨機延遲，降低固定週期特徵。
-      wait_seconds = 60 + random.randint(0, 50)
+        wait_seconds = POLL_MIN_SECONDS + random.randint(
+          0, max(0, POLL_MAX_SECONDS - POLL_MIN_SECONDS)
+        )
       print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] 下次檢查將在 {wait_seconds} 秒後執行...")
       await asyncio.sleep(wait_seconds)
 

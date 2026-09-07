@@ -1,21 +1,8 @@
 # Discord Announcement Forwarding Bot
 
-**目前版本：1.0.0**
+**目前版本：v1.1.0**
 
 以 Python 建立的 Discord 公告監聽與轉發工具。程式使用 user client 輪詢來源頻道，偵測新訊息後，透過官方 Discord Bot 將內容轉發到指定目的頻道。
-
-## 版本 1.0.0
-
-首個完整版本，包含：
-
-- user token 啟動驗證與來源頻道輪詢
-- 多監聽組與來源頻道管理
-- 每個監聽組設定轉發目的頻道
-- 官方 Bot token 驗證與 REST API 訊息轉發
-- 訊息來源、傳送者、建立時間與附件網址格式化
-- 超過 2000 字的訊息自動分段
-- 監聽進度與轉發設定保存
-- 專案 `.venv` 與依賴版本固定
 
 ## ⚠️⚠️⚠️免責聲明與重要提醒⚠️⚠️⚠️
 
@@ -36,9 +23,22 @@
 - 每 60 至 110 秒輪詢一次來源頻道的新訊息。
 - 記錄最後處理的訊息 ID，避免重複處理。
 - 轉發訊息時保留來源伺服器、頻道、傳送者暱稱、訊息建立時間、文字與附件網址。
+- 支援 Discord Embed 資訊卡與來源身份組名稱轉換。
 - 超過 Discord 單則 2000 字限制時自動分段發送。
 - 設定與監聽進度保存到 `listener_state.json`。
 - Bot token 啟用轉發前會先透過 Discord API 驗證。
+
+## 無 CLI 版本
+
+若要在伺服器或背景程序中執行，請使用無 CLI 版本。它不會顯示主選單，也不會等待鍵盤輸入；監聽組、來源頻道、轉發目的頻道與輪詢間隔都由 JSON 設定，Token 則由環境變數提供。
+
+完整說明請參考 [no_cli/README.md](no_cli/README.md)。
+
+啟動指令：
+
+```bash
+.venv/bin/python no_cli/worker.py
+```
 
 ## 專案結構
 
@@ -48,6 +48,11 @@ Discord_Announcement_Forwarding_Bot/
 ├── listener_state.json    # 監聽組與進度設定
 ├── requirements.txt       # Python 依賴
 ├── README.md              # 使用說明
+├── no_cli/                # 無 CLI 部署版本
+│   ├── worker.py
+│   ├── config.json
+│   ├── requirements.txt
+│   └── README.md
 ├── .env                   # 本機 token 設定
 └── .venv/                 # 專案虛擬環境
 ```

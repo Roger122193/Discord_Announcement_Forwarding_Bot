@@ -3,3 +3,4 @@
 __pycache__/
 .venv/
 listener_state.json
+no_cli/listener_state.json
